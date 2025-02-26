@@ -3,8 +3,6 @@
 set -e
 set -u
 
-. ./options.sh
-
 echo "processing function ${METADATA_FUNCTION}..."
 export PG_CONNECTION_ID=$(yc serverless mdbproxy list --format json-rest | jq -r -c ".[] | select( .name == \"${PG_CONNECTION_NAME}\") | .id")
 

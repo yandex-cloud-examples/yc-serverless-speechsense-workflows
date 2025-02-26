@@ -3,8 +3,6 @@
 set -e
 set -u
 
-. ./options.sh
-
 echo "processing workflow ${WORKFLOW_NAME}..."
 #check workflow exists
 res=$(yc serverless workflow list --format json | jq -r -c ".workflows[]? | select( .name == \"${WORKFLOW_NAME}\") | .id")

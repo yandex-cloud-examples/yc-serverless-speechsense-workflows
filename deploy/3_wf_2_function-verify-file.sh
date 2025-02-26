@@ -3,9 +3,6 @@
 set -e
 set -u
 
-. ./options.sh
-
-
 echo "processing function ${VERIFY_FUNCTION_NAME}..."
 #check function exists
 res=$(yc serverless function list --format json-rest | jq -r -c ".[] | select( .name == \"${VERIFY_FUNCTION_NAME}\") | .id")

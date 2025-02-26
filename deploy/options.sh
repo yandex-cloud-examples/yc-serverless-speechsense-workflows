@@ -2,20 +2,19 @@
 
 ##################################################################################################################
 
-read -r -p "Enter folder id [b1g5l1pqu2q4uh06lubk]: " FOLDER_ID
-FOLDER_ID=${FOLDER_ID:-b1g5l1pqu2q4uh06lubk}
+read -r -p "Enter folder id: " FOLDER_ID
 yc config set folder-id "${FOLDER_ID}" #идентификатор каталога в облаке
 echo $FOLDER_ID
 
-read -r -p "Enter service account name [ddolbin-sa-admin]: " ACCOUNT_NAME
-ACCOUNT_NAME=${ACCOUNT_NAME:-ddolbin-sa-admin}
+read -r -p "Enter service account name [speechsense-sa]: " ACCOUNT_NAME
+ACCOUNT_NAME=${ACCOUNT_NAME:-speechsense-sa}
 export ACCOUNT_NAME # имя сервисного аккаунта для запуска функций и потока
 echo $ACCOUNT_NAME
 
 export PREFIX=speechsense-upload
 
 # переменные бакета
-export BUCKET_NAME='ddolbin-bucket' # ${PREFIX}-bucket # название бакета для хранения файлов и метаданных
+export BUCKET_NAME="${PREFIX}-bucket" # ${PREFIX}-bucket # название бакета для хранения файлов и метаданных
 export METADATA_PATH='client_metadata' # путь к папке с метаданными в бакете
 
 # переменные кластера метаданных postgresql
