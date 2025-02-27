@@ -14,7 +14,10 @@ echo $ACCOUNT_NAME
 export PREFIX=speechsense-upload
 
 # переменные бакета
-export BUCKET_NAME="${PREFIX}-bucket" # ${PREFIX}-bucket # название бакета для хранения файлов и метаданных
+export DEFAULT_BUCKET_NAME="${PREFIX}-bucket"
+read -r -p "Enter bucket name [${DEFAULT_BUCKET_NAME}]: " BUCKET_NAME
+export BUCKET_NAME=${BUCKET_NAME:-$DEFAULT_BUCKET_NAME} # название бакета для хранения файлов и метаданных
+echo $BUCKET_NAME
 export METADATA_PATH='client_metadata' # путь к папке с метаданными в бакете
 
 # переменные кластера метаданных postgresql
