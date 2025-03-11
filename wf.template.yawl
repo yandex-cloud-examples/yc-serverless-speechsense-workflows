@@ -1,0 +1,190 @@
+yawl: "0.1"
+start: collect_info
+defaultRetryPolicy:
+  errorList:
+    - STEP_QUOTA_EXCEEDED
+  retryCount: 10
+  initialDelay: "5s"
+steps:
+  collect_info:
+    foreach:
+      input: '\(.metadataPath | map({path: .}))'
+      do:
+        start: bucketGet
+        steps:
+          bucketGet:
+            description: "Получение содержимого json-файла с S3-бакета в том же самом каталоге"
+            objectStorage:
+              bucket: ${BUCKET_NAME}
+              object: \(.path)
+              get: {}
+              output: '\({bucketFileContent: .Content|@base64d|fromjson})'
+              next: verifyFile
+          verifyFile:
+            description: "Проверка синтаксиса содержимого файла на соответствие json-схеме"
+            functionCall:
+              functionId: ${VERIFY_FUNCTION_ID}
+              input: '\(.bucketFileContent)'
+              output: '\(.)'
+              next: switch_log_corrupted_file
+          switch_log_corrupted_file:
+            switch:
+              choices:
+                - condition: .error != null
+                  next: log_corrupted_file
+              default:
+                next: switch_log_corrupted_records
+          log_corrupted_file:
+            description: "структура файла не правильная - логируем и завершаем работу"
+            functionCall:
+              functionId: ${METADATA_FUNCTION_ID}
+              input: '\({
+                           data: {"metadata_file_path": .path, "schema_error": .error}, 
+                           action: "log_corrupted_file" 
+                         })'
+          switch_log_corrupted_records:
+            switch:
+              choices:
+                - condition: .corrupted_records | length > 0
+                  next: log_corrupted_records
+              default:
+                next: check_records_uploaded
+          log_corrupted_records:
+            description: "в массиве metadata были записи, не соответствующие json-схеме, логируем их"
+            functionCall:
+              functionId: ${METADATA_FUNCTION_ID}
+              input: '\(.path as $mp | .corrupted_records[]? |= .+ {metadata_file_path: $mp} | {data: .corrupted_records, action: "log_corrupted_records"})'
+              next: check_records_uploaded
+
+          check_records_uploaded:
+            description: "Проверяем, загружены ли уже файлы с метаданными из массива metadata"
+            functionCall:
+              functionId: ${METADATA_FUNCTION_ID}
+              input: '\(.source_system_id as $s_id |
+                        {
+                          data: [.metadata[]? | {id: .id, source_system_id: $s_id}],
+                          action: "check_records_uploaded"
+                        })'
+              output: '\(.)'
+              next: modify_metadata
+          modify_metadata:
+            description: "меняем метаданные - удаляем из массива .metadata и переносим в массив .uploaded все уже загруженные записи"
+            noOp:
+              output: '\(.path as $mp |
+                         { 
+                            metadata: [.metadata[] as $meta | select(all(.uploaded[]; .id != $meta.id)) | $meta],
+                            uploaded: [ 
+                                         .metadata[] as $meta | .uploaded[] | select(.id == $meta.id) | $meta |
+                                         {
+                                            record: .| tostring, 
+                                            metadata_file_path: $mp, 
+                                            "upload_error": "file already uploaded"
+                                         }
+                                       ]
+                         }
+                        )'
+              next: switch_log_duplicates
+          switch_log_duplicates:
+            switch:
+              choices:
+                - condition: .uploaded | length > 0
+                  next: log_duplicates
+              default:
+                next: switch_upload_entries
+          log_duplicates:
+            description: "логируем уже загруженные записи"
+            functionCall:
+              functionId: ${METADATA_FUNCTION_ID}
+              input: '\({ data: .uploaded, action: "log_upload_errors" })'
+              next: switch_upload_entries
+          switch_upload_entries:
+            switch:
+              choices:
+                - condition: .metadata | length > 0
+                  next: get_lockbox_key_id
+              default:
+                next: doNothing
+
+          get_lockbox_key_id:
+            description: "получаем ключ секрета из LockBox"
+            functionCall:
+              functionId: ${METADATA_FUNCTION_ID}
+              input: '\({data: {"source_system_id": .source_system_id}, "action": "get_speechsense_key" })'
+              next: uploadEntries
+          uploadEntries:
+            description: "Вызывем загрузку в SpeechSense в цикле"
+            foreach:
+              input: '\(.bucket_folder as $t |
+                        .lockbox_secret_id as $s |
+                        .source_system_id as $s_id |
+                        .path as $p |
+                        .metadata? |= map(
+                          . + {
+                            file_url: ($t + "/" + .file_name),
+                            lockbox_secret_id: $s,
+                            source_system_id: $s_id,
+                            metadata_file_path: $p
+                          } |
+                          del(.file_name) |
+                          {entry: .}
+                        ) | .metadata)'
+              do:
+                start: callUpload
+                steps:
+                  callUpload:
+                    functionCall:
+                      functionId: ${SPEECHSENSE_UPLOAD_FUNCTION_ID}
+                      input: '\(.entry)'
+              output: '\({callResult: .})'
+              next: modify_call_result
+          modify_call_result:
+            description: "Меняем метаданные - создаем массив с ошибками при загрузке в SpeechSense и массив успешно загруженных записей"
+            noOp:
+              output: '\({
+                            upload_errors: [
+                              .callResult[]? | 
+                              select(.upload_error != null) | 
+                              {
+                                record: del(.lockbox_secret_id, .upload_error, .talk_id, .metadata_file_path) | tostring,
+                                metadata_file_path: .metadata_file_path,
+                                upload_error: .upload_error
+                              }
+                            ],
+                            records_uploaded: [
+                              .callResult[]? | 
+                              select(.upload_error == null and .talk_id != null) | 
+                              del(.lockbox_secret_id, .upload_error) | 
+                              .speechsense_talk_id = .talk_id | 
+                              del(.talk_id)
+                            ]
+                          })'
+              next: switch_mark_records_uploaded
+          switch_mark_records_uploaded:
+            switch:
+              choices:
+                - condition: .records_uploaded | length > 0
+                  next: mark_records_uploaded
+              default:
+                next: switch_log_upload_errors
+          mark_records_uploaded:
+            description: "Логируем информацию об успешно загруженных файлах"
+            functionCall:
+              functionId: ${METADATA_FUNCTION_ID}
+              input: '\({data: .records_uploaded, action: "mark_records_uploaded"})'
+              next: switch_log_upload_errors
+          switch_log_upload_errors:
+            switch:
+              choices:
+                - condition: .upload_errors | length > 0
+                  next: log_upload_errors
+              default:
+                next: doNothing
+          log_upload_errors:
+            description: "Логируем ошибки при загрузке файлов"
+            functionCall:
+              functionId: ${METADATA_FUNCTION_ID}
+              input: '\({data: .upload_errors, action: "log_upload_errors"})'
+          doNothing:
+            noOp:
+              output: '\({})'
+      output:  '\({})'
